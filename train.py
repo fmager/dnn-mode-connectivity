@@ -15,7 +15,6 @@ import utils
 parser = argparse.ArgumentParser(description='DNN curve training')
 parser.add_argument('--dir', type=str, default='/tmp/curve/', metavar='DIR',
                     help='training directory (default: /tmp/curve/)')
-
 parser.add_argument('--dataset', type=str, default='CIFAR10', metavar='DATASET',
                     help='dataset name (default: CIFAR10)')
 parser.add_argument('--use_test', action='store_true',
@@ -65,6 +64,24 @@ parser.add_argument('--seed', type=int, default=1, metavar='S', help='random see
 
 args = parser.parse_args()
 
+args.dir = os.path.join(args.dir, args.dataset.lower(), args.model.lower())
+
+if args.curve is not None:
+    args.init_start = os.path.join(args.dir, args.init_start)
+    args.init_end = os.path.join(args.dir, args.init_end)
+    args.dir = os.path.join(args.dir, f'seed_{args.init_start.split('/')[-2].split('_')[-1]}_to_{args.init_end.split('/')[-2].split('_')[-1]}', args.curve.lower())
+else:
+    args.dir = os.path.join(args.dir, f'seed_{args.seed}')
+
+if args.resume is not None:
+    args.resume = os.path.join(args.dir, args.resume)
+
+# Print command line arguments nicely
+print('Command line arguments:')
+for arg in vars(args):
+    print(f'{arg}: {getattr(args, arg)}')
+
+    
 os.makedirs(args.dir, exist_ok=True)
 with open(os.path.join(args.dir, 'command.sh'), 'w') as f:
     f.write(' '.join(sys.argv))

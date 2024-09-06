@@ -66,3 +66,12 @@ target/
 
 #Idea
 .idea*
+
+#Figures
+figures/*
+
+#Data
+data/*
+
+#Temp
+temp/*

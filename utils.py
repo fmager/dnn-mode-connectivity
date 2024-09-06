@@ -50,8 +50,8 @@ def train(train_loader, model, optimizer, criterion, regularizer=None, lr_schedu
         if lr_schedule is not None:
             lr = lr_schedule(iter / num_iters)
             adjust_learning_rate(optimizer, lr)
-        input = input.cuda(async=True)
-        target = target.cuda(async=True)
+        input = input.cuda(non_blocking=True)
+        target = target.cuda(non_blocking=True)
 
         output = model(input)
         loss = criterion(output, target)
@@ -76,14 +76,17 @@ def test(test_loader, model, criterion, regularizer=None, **kwargs):
     loss_sum = 0.0
     nll_sum = 0.0
     correct = 0.0
+    preds = []
 
     model.eval()
 
     for input, target in test_loader:
-        input = input.cuda(async=True)
-        target = target.cuda(async=True)
+        input = input.cuda(non_blocking=True)
+        target = target.cuda(non_blocking=True)
 
         output = model(input, **kwargs)
+        probs = F.softmax(output, dim=1)
+        preds.append(probs.cpu().data.numpy())
         nll = criterion(output, target)
         loss = nll.clone()
         if regularizer is not None:
@@ -98,7 +101,76 @@ def test(test_loader, model, criterion, regularizer=None, **kwargs):
         'nll': nll_sum / len(test_loader.dataset),
         'loss': loss_sum / len(test_loader.dataset),
         'accuracy': correct * 100.0 / len(test_loader.dataset),
+        'predictions': np.vstack(preds),
     }
+
+def test_relative(test_loader, model, criterion, layer_name: str, rel_proj, regularizer=None, **kwargs):
+
+    outputs_abs = []
+    outputs_rel = []
+
+    latent = torch.Tensor()
+    def forward_hook(module, input, output):
+        nonlocal latent
+        latent = input[0].clone().detach()
+    
+    layer = getattr(model.net, layer_name)
+    handle = layer.register_forward_hook(forward_hook)
+
+    loss_sum = 0.0
+    nll_sum = 0.0
+    correct = 0.0
+    preds = []
+
+    model.eval()
+
+    for input, target in test_loader['test']:
+
+        input = input.cuda(non_blocking=True).requires_grad_(False)
+        target = target.cuda(non_blocking=True).requires_grad_(False)
+
+        out = model(input, **kwargs)
+
+        outputs_abs.append(latent.clone().detach().cpu())
+
+        probs = F.softmax(out, dim=1)
+        preds.append(probs.cpu().data.numpy())
+        nll = criterion(out, target)
+        loss = nll.clone()
+        if regularizer is not None:
+            loss += regularizer(model)
+
+        nll_sum += nll.item() * input.size(0)
+        loss_sum += loss.item() * input.size(0)
+        pred = out.data.argmax(1, keepdim=True)
+        correct += pred.eq(target.data.view_as(pred)).sum().item()
+
+    abs_latent = torch.cat(outputs_abs, dim=0)
+    
+    for input, target in test_loader['anchors']:
+        input = input.cuda(non_blocking=True).requires_grad_(False)
+        target = target.cuda(non_blocking=True).requires_grad_(False)
+
+        _ = model(input, **kwargs)
+        anchors = latent.clone().detach().cpu()
+    
+        rel_latent = rel_proj.project(abs_latent, anchors)
+        outputs_rel.append(rel_latent)
+    
+    handle.remove()
+
+    return {
+        'nll': nll_sum / len(test_loader['test'].dataset),
+        'loss': loss_sum / len(test_loader['test'].dataset),
+        'accuracy': correct * 100.0 / len(test_loader['test'].dataset),
+        'predictions': np.vstack(preds),
+        'output_abs': abs_latent,
+        'output_rel': torch.cat(outputs_rel, dim=1),
+    }
+
+def get_gradients(test_loader, model, criterion, layer_name: str, rel_proj, regularizer=None, **kwargs):
+
+    pass
 
 
 
@@ -107,7 +179,7 @@ def predictions(test_loader, model, **kwargs):
     preds = []
     targets = []
     for input, target in test_loader:
-        input = input.cuda(async=True)
+        input = input.cuda(non_blocking=True)
         output = model(input, **kwargs)
         probs = F.softmax(output, dim=1)
         preds.append(probs.cpu().data.numpy())
@@ -155,7 +227,7 @@ def update_bn(loader, model, **kwargs):
     model.apply(lambda module: _get_momenta(module, momenta))
     num_samples = 0
     for input, _ in loader:
-        input = input.cuda(async=True)
+        input = input.cuda(non_blocking=True)
         batch_size = input.data.size(0)
 
         momentum = batch_size / (num_samples + batch_size)
@@ -166,3 +238,62 @@ def update_bn(loader, model, **kwargs):
         num_samples += batch_size
 
     model.apply(lambda module: _set_momenta(module, momenta))
+
+
+def highlight_anchors(fig):
+    for trace in fig.data:
+        if trace.name == 'anchor':
+            trace.marker.symbol = 'star'  # Set the marker type to 'star' for 'anchor'
+            trace.marker.size = 5
+            trace.marker.color = 'black' 
+            trace.marker.line.width = .05  # Set the marker line width to 2 
+        else:
+            trace.marker.symbol = 'circle'
+            trace.marker.line.width= .05
+
+
+    for frame in fig.frames:
+      for trace in frame.data:
+        if trace.name == 'anchor':
+            trace.marker.symbol = 'star'  # Set the marker type to 'star' for 'anchor'
+            trace.marker.size = 5
+            trace.marker.color = 'black'
+            trace.marker.line.width = .05  # Set the marker line width to 2
+        else:
+            trace.marker.symbol = 'circle'
+            trace.marker.line.width= .05
+            
+    return fig
+
+class RelProjector(object):
+    def __init__(self, proj_fn, center: bool = False, standardize: bool = False):
+        self.proj_fn = proj_fn
+        self.center = center
+        self.standardize = standardize
+
+    def project(self, input, anchors):
+        if self.center is True:
+            m = input.mean(dim=0, keepdim=True)
+            input -= m
+            anchors -= m
+        if self.standardize is True:
+            s = input.std(dim=0, keepdim=True)
+            input /= s
+            anchors /= s
+        return self.proj_fn(input, anchors)
+
+def cosine_projection(x, y):
+    x = F.normalize(x, p=2, dim=1)
+    y = F.normalize(y, p=2, dim=1)
+    return torch.einsum('ik,jk->ij', x, y)
+
+def basis_norm_projection(x, y):
+    return torch.einsum('ik,jk->ij', x, y) / (y**2).sum(dim=1)
+
+def euclidean_projection(x, y):
+    return dist_projection(x, y, 2)
+
+def dist_projection(x, y, p):
+    y = y.permute(2, 0, 1)
+    x = x.permute(2, 0, 1)
+    return torch.cdist(x, y, p=p).permute(1, 2, 0)

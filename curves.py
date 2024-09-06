@@ -316,3 +316,60 @@ class CurveNet(Module):
 
 def l2_regularizer(weight_decay):
     return lambda model: 0.5 * weight_decay * model.l2
+
+
+class RelCurveNet(Module):
+    def __init__(self, curve: CurveNet, anchors: torch.Tensor, projection: str, latent_layer: str, batch_size: int):
+        super(RelCurveNet, self).__init__()
+        self.curve = curve
+        self.projection = projection
+        self.anchors = anchors
+        self.batch_size = batch_size
+        self.hook = CurveNet.net.getattr(latent_layer).register_forward_hook(self.forward_hook)
+        self.current_t = None
+        self.latent_anchors = None
+
+        if self.projection == 'cosine':
+            self.projention_fn = cos_projection
+        elif self.projection == 'basis_norm':
+            self.projention_fn = basis_norm_projection
+        elif self.projection == 'dist':
+            self.projention_fn = dist_projection
+        else:
+            raise ValueError(f'Unknown projection {self.projection}')
+        
+    def forward_hook(self, module, input, output):
+        self.latent.append(output)
+
+    def forward(self, input, num_anchors, t=None):
+
+        if t is None or t != self.current_t:
+            self.current_t = t
+            self.latent = []
+            anchors = self.anchors[num_anchors]
+            anchors_batch = anchors.split(self.batch_size)
+            for batch in anchors_batch:
+                self.curve.net(batch, t)
+            self.curve(self.anchors, t)
+            self.latent_anchors = torch.cat(self.latent, dim=0)
+
+        self.latent = []
+        self.curve(input, t)
+        latent_input = torch.cat(self.latent, dim=0)
+        return self.projention_fn(latent_input, self.latent_anchors,)
+
+
+def cos_projection(x, y):
+    x = F.normalize(x, p=2, dim=1)
+    y = F.normalize(y, p=2, dim=1)
+    return torch.einsum('ik,jk->ij', x, y)
+
+def basis_norm_projection(x, y):
+    return torch.einsum('ik,jk->ij', x, y) / (y**2).sum(dim=1)
+
+def dist_projection(x, y, p=2):
+    y = y.permute(2, 0, 1)
+    x = x.permute(2, 0, 1)
+    return torch.cdist(x, y, p=p).permute(1, 2, 0)
+
+

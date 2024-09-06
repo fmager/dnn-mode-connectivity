@@ -46,6 +46,8 @@ parser.add_argument('--wd', type=float, default=1e-4, metavar='WD',
 
 args = parser.parse_args()
 
+args.dir = os.path.join(args.dir, args.dataset.lower(), args.model.lower(), args.curve.lower())
+args.ckpt = os.path.join(args.dir, args.ckpt)
 os.makedirs(args.dir, exist_ok=True)
 
 torch.backends.cudnn.benchmark = True

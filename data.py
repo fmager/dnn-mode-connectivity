@@ -40,7 +40,7 @@ class Transforms:
 
 
 def loaders(dataset, path, batch_size, num_workers, transform_name, use_test=False,
-            shuffle_train=True):
+            shuffle_train=True, drop_last=False):
     ds = getattr(torchvision.datasets, dataset)
     path = os.path.join(path, dataset.lower())
     transform = getattr(getattr(Transforms, dataset), transform_name)
@@ -51,15 +51,15 @@ def loaders(dataset, path, batch_size, num_workers, transform_name, use_test=Fal
         test_set = ds(path, train=False, download=True, transform=transform.test)
     else:
         print("Using train (45000) + validation (5000)")
-        train_set.train_data = train_set.train_data[:-5000]
-        train_set.train_labels = train_set.train_labels[:-5000]
+        train_set.data = train_set.data[:-5000]
+        train_set.targets = train_set.targets[:-5000]
 
         test_set = ds(path, train=True, download=True, transform=transform.test)
         test_set.train = False
-        test_set.test_data = test_set.train_data[-5000:]
-        test_set.test_labels = test_set.train_labels[-5000:]
-        delattr(test_set, 'train_data')
-        delattr(test_set, 'train_labels')
+        test_set.test_data = test_set.data[-5000:]
+        test_set.test_labels = test_set.targets[-5000:]
+        delattr(test_set, 'data')
+        delattr(test_set, 'targets')
 
     return {
                'train': torch.utils.data.DataLoader(
@@ -67,13 +67,29 @@ def loaders(dataset, path, batch_size, num_workers, transform_name, use_test=Fal
                    batch_size=batch_size,
                    shuffle=shuffle_train,
                    num_workers=num_workers,
-                   pin_memory=True
+                   pin_memory=True,
+                   drop_last=drop_last,
                ),
                'test': torch.utils.data.DataLoader(
                    test_set,
                    batch_size=batch_size,
                    shuffle=False,
                    num_workers=num_workers,
-                   pin_memory=True
+                   pin_memory=True,
+                   drop_last=drop_last,
                ),
-           }, max(train_set.train_labels) + 1
+           }, max(train_set.targets) + 1
+
+class Latent(torch.utils.data.Dataset):
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        print(f'Initialized latent dataset with {len(self)} samples')
+
+    def __len__(self):
+        return len(self.x)
+
+    def __getitem__(self, idx):
+        if idx >= len(self):
+            raise IndexError("Index out of bounds")
+        return (self.x[idx], self.y[idx])
