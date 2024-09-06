@@ -75,3 +75,6 @@ data/*
 
 #Temp
 temp/*
+
+#Jupyter files
+*.ipynb
